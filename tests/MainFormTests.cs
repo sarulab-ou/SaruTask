@@ -10,6 +10,18 @@ internal static class MainFormTests
 {
     private static int assertions;
     private static T Field<T>(object owner, string name) { return (T)owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(owner); }
+    private static bool HasAccessibleValue(AccessibleObject node, string value, int depth)
+    {
+        if (node.Value == value) return true;
+        if (depth == 0) return false;
+        int count = Math.Min(200, node.GetChildCount());
+        for (int i = 0; i < count; i++)
+        {
+            var child = node.GetChild(i);
+            if (child != null && HasAccessibleValue(child, value, depth - 1)) return true;
+        }
+        return false;
+    }
     private static void Check(bool condition, string name) { if (!condition) throw new Exception(name); assertions++; Console.WriteLine("PASS " + name); }
     private static void Until(Func<bool> condition)
     {
@@ -32,25 +44,27 @@ internal static class MainFormTests
             using (var form = new MainForm(new AppSettings { Roots = new System.Collections.Generic.List<string> { temp } }, true, signal, null))
             {
                 form.Show();
-                var list = Field<ListView>(form, "results"); var search = Field<TextBox>(form, "search"); var recursive = Field<CheckBox>(form, "recursive");
-                Until(() => list.Items.Count == 2 && !Field<bool>(form, "scanning"));
+                var list = Field<DataGridView>(form, "results"); var search = Field<TextBox>(form, "search"); var recursive = Field<CheckBox>(form, "recursive");
+                Until(() => list.Rows.Count == 2 && !Field<bool>(form, "scanning"));
                 Check(!recursive.Checked && !form.Visible, "background startup is shallow and hidden");
-                Check(form.MainMenuStrip != null && form.MainMenuStrip.Items[0].Text == "ヘルプ(&H)", "Help menu exposes Alt+H access key");
-                var help = (ToolStripMenuItem)form.MainMenuStrip.Items[0];
+                Check(HasAccessibleValue(list.AccessibilityObject, "タスク.md", 3), "screen readers can read result values");
+                Check(form.MainMenuStrip != null && System.Linq.Enumerable.Any(System.Linq.Enumerable.Cast<ToolStripMenuItem>(form.MainMenuStrip.Items), x => x.Text == "ヘルプ(&H)"), "Help menu exposes Alt+H access key");
+                var help = System.Linq.Enumerable.Single(System.Linq.Enumerable.Cast<ToolStripMenuItem>(form.MainMenuStrip.Items), x => x.Text == "ヘルプ(&H)");
                 Check(help.DropDownItems.Count == 2 && help.DropDownItems[0].Text == "更新(&U)…" && help.DropDownItems[1].Text == "バージョン(&A)…", "Help menu contains update and version actions");
                 File.WriteAllText(Path.Combine(temp, "追加.md"), "");
-                Until(() => list.Items.Count == 3);
-                Check(list.Items.Count == 3, "filesystem watcher automatically picks up a new Markdown");
+                Until(() => list.Rows.Count == 3);
+                Check(list.Rows.Count == 3, "filesystem watcher automatically picks up a new Markdown");
                 File.Move(Path.Combine(temp, "追加.md"), Path.Combine(temp, "変更.md"));
-                Until(() => System.Linq.Enumerable.Any(System.Linq.Enumerable.Cast<ListViewItem>(list.Items), x => x.Text == "変更.md"));
-                Check(list.Items.Count == 3, "filesystem watcher reflects rename without duplicates");
+                Until(() => System.Linq.Enumerable.Any(System.Linq.Enumerable.Cast<DataGridViewRow>(list.Rows), x => Convert.ToString(x.Cells[0].Value) == "変更.md"));
+                Check(list.Rows.Count == 3, "filesystem watcher reflects rename without duplicates");
                 recursive.Checked = true;
-                Until(() => list.Items.Count == 4 && !Field<bool>(form, "scanning"));
-                Check(list.Items.Count == 4, "recursive toggle updates actual UI results");
+                Until(() => list.Rows.Count == 4 && !Field<bool>(form, "scanning"));
+                Check(list.Rows.Count == 4, "recursive toggle updates actual UI results");
                 search.Text = "nested";
-                Check(list.Items.Count == 1 && list.Items[0].Text == "nested.md", "typing filters UI results immediately");
+                Check(list.Rows.Count == 1 && Convert.ToString(list.Rows[0].Cells[0].Value) == "nested.md", "typing filters UI results immediately");
+                Check(HasAccessibleValue(list.AccessibilityObject, "nested.md", 3) && !HasAccessibleValue(list.AccessibilityObject, "タスク.md", 3), "screen reader values follow filtering without stale results");
                 search.Text = "zz-no-match";
-                Check(list.Items.Count == 0, "no-match state clears previous results");
+                Check(list.Rows.Count == 0, "no-match state clears previous results");
                 search.Text = "タスク"; form.BringToFrontForSearch();
                 Check(form.Visible && search.SelectionLength == search.TextLength, "recall shows window and selects search text");
                 form.Close();
