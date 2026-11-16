@@ -13,7 +13,6 @@ namespace SaruTask
         private readonly Label status = new Label();
         private readonly Button check = new Button();
         private readonly Button install = new Button();
-        private readonly Button local = new Button();
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private UpdateService.Release latest;
 
@@ -30,8 +29,7 @@ namespace SaruTask
             var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty };
             check.Text = "最新版を確認"; check.Width = 150; check.Height = 34; check.Click += async delegate { await CheckLatest(); };
             install.Text = "更新して再起動"; install.Width = 180; install.Height = 34; install.Enabled = false; install.Click += async delegate { await InstallLatest(); };
-            local.Text = "ZIPから更新…"; local.Width = 160; local.Height = 34; local.Click += async delegate { await SelectPackage(); };
-            actions.Controls.Add(check); actions.Controls.Add(install); actions.Controls.Add(local); layout.Controls.Add(actions, 0, 2);
+            actions.Controls.Add(check); actions.Controls.Add(install); layout.Controls.Add(actions, 0, 2);
             var releases = new LinkLabel { Text = "配布ページを開く", AutoSize = true };
             releases.LinkClicked += delegate { try { Process.Start(new ProcessStartInfo(UpdateService.ReleasesUrl) { UseShellExecute = true }); } catch (Exception ex) { status.Text = ex.Message; } };
             layout.Controls.Add(releases, 0, 3);
@@ -44,7 +42,7 @@ namespace SaruTask
 
         private void Busy(bool value)
         {
-            check.Enabled = local.Enabled = !value;
+            check.Enabled = !value;
             install.Enabled = !value && latest != null && latest.Version > UpdateService.CurrentVersion && latest.Package != null;
         }
 
@@ -75,24 +73,5 @@ namespace SaruTask
             finally { if (!IsDisposed) Busy(false); }
         }
 
-        private async Task SelectPackage()
-        {
-            using (var picker = new OpenFileDialog { Title = "ダウンロードしたSaruTaskのZIP版を選択", Filter = "SaruTaskのZIP版 (*.zip)|*.zip", CheckFileExists = true, Multiselect = false })
-            {
-                if (picker.ShowDialog(this) != DialogResult.OK) return;
-                Busy(true); status.Text = "ZIPの内容を検証しています…";
-                try
-                {
-                    string path = picker.FileName;
-                    string candidate = await Task.Run(() => UpdateService.ExtractPackage(path, UpdateService.CreateStageDirectory(), UpdateService.CurrentVersion, null));
-                    if (IsDisposed) return;
-                    var version = UpdateService.ValidateCandidate(candidate, UpdateService.CurrentVersion);
-                    if (Confirm(version)) { CandidatePath = candidate; DialogResult = DialogResult.OK; }
-                    else status.Text = "更新をキャンセルしました。";
-                }
-                catch (Exception ex) { if (!IsDisposed) status.Text = "ZIPを使用できません。\n" + ex.Message; }
-                finally { if (!IsDisposed) Busy(false); }
-            }
-        }
     }
 }
