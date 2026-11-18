@@ -35,6 +35,11 @@ namespace SaruTask
         private string startupWarning;
         private readonly Icon appIcon;
         private readonly Bitmap[] entryIcons;
+        private bool renaming;
+        private bool cancellingRename;
+        private SearchEntry renameEntry;
+        private string committedRenamePath;
+        private string selectAfterScan;
 
         public MainForm(AppSettings initial, bool background, EventWaitHandle showEvent, string warning)
         {
@@ -56,7 +61,12 @@ namespace SaruTask
             results.Dock = DockStyle.Fill; results.AccessibleName = "検索結果";
             results.Columns.Add("Name", "名前"); results.Columns.Add("Kind", "種類"); results.Columns.Add("Parent", "フォルダ"); results.Columns.Add("Modified", "更新日時");
             int[] widths = { 370, 95, 370, 145 };
-            for (int i = 0; i < widths.Length; i++) { results.Columns[i].Width = widths[i]; results.Columns[i].SortMode = DataGridViewColumnSortMode.Programmatic; }
+            for (int i = 0; i < widths.Length; i++) { results.Columns[i].Width = widths[i]; results.Columns[i].SortMode = DataGridViewColumnSortMode.Programmatic; results.Columns[i].ReadOnly = i != 0; }
+            results.CellBeginEdit += delegate(object sender, DataGridViewCellCancelEventArgs e) { if (!renaming || e.ColumnIndex != 0) e.Cancel = true; };
+            results.CellValidating += ValidateRename;
+            results.CellEndEdit += delegate { FinishRename(); };
+            results.CommitRename = delegate { return TryCommitRename(results.EditingControl == null ? renameEntry.Name : results.EditingControl.Text); };
+            results.CancelRename = CancelRenameSelected;
             results.Columns[0].DefaultCellStyle.Padding = new Padding(24, 0, 0, 0);
             entryIcons = new[] { DrawEntryIcon(true), DrawEntryIcon(false) };
             results.CellPainting += delegate(object sender, DataGridViewCellPaintingEventArgs e) {
@@ -71,6 +81,7 @@ namespace SaruTask
             results.CellMouseDown += delegate(object sender, DataGridViewCellMouseEventArgs e) { if (e.Button == MouseButtons.Right && e.RowIndex >= 0) results.CurrentCell = results.Rows[e.RowIndex].Cells[0]; };
             results.ColumnHeaderMouseClick += delegate(object sender, DataGridViewCellMouseEventArgs e) { if (sortColumn == e.ColumnIndex) descending = !descending; else { sortColumn = e.ColumnIndex; descending = false; } Filter(); };
             var menu = new ContextMenuStrip(); menu.Items.Add("開く", null, delegate { OpenSelected(false); }); menu.Items.Add("保存場所を開く", null, delegate { OpenSelected(true); });
+            menu.Items.Add(new ToolStripMenuItem("名前の変更", null, delegate { BeginRenameSelected(); }) { ShortcutKeyDisplayString = "F2" });
             menu.Items.Add("パスをコピー", null, delegate { CopyPath(); }); results.ContextMenuStrip = menu;
             var resultPanel = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
             resultPanel.Controls.Add(results);
@@ -99,10 +110,12 @@ namespace SaruTask
             var windowHandle = Handle;
             instanceWait = ThreadPool.RegisterWaitForSingleObject(showEvent, delegate { Post(delegate { BringToFrontForSearch(); }); }, null, -1, false);
             Shown += delegate { RebuildWatchers(); BeginScan(); search.Focus(); if (startHidden) Hide(); if (startupWarning != null) Notify(startupWarning); };
-            Activated += delegate { search.Focus(); };
+            Activated += delegate { if (!renaming) search.Focus(); };
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
             KeyPreview = true;
             KeyDown += delegate(object sender, KeyEventArgs e) {
+                if (e.KeyCode == Keys.F2) { BeginRenameSelected(); e.SuppressKeyPress = true; return; }
+                if (e.KeyCode == Keys.Escape && renaming) { CancelRenameSelected(); e.SuppressKeyPress = true; return; }
                 if (e.KeyCode == Keys.Escape) { Hide(); e.Handled = true; }
                 if (e.KeyCode == Keys.F5) { BeginScan(); e.Handled = true; }
                 if (e.Control && e.KeyCode == Keys.L) { search.Focus(); search.SelectAll(); e.SuppressKeyPress = true; }
@@ -139,12 +152,13 @@ namespace SaruTask
         {
             Show(); WindowState = FormWindowState.Normal;
             TopMost = true; Activate(); NativeMethods.SetForegroundWindow(Handle); TopMost = false;
+            if (renaming) { if (results.EditingControl != null) results.EditingControl.Focus(); return; }
             search.Focus(); search.SelectAll(); BeginScan();
         }
 
         private async void BeginScan()
         {
-            if (exiting || IsDisposed) return;
+            if (exiting || IsDisposed || renaming) return;
             if (scanCancellation != null) scanCancellation.Cancel();
             var cancellation = new CancellationTokenSource(); scanCancellation = cancellation;
             var roots = settings.Roots.ToArray(); bool includeChildren = recursive.Checked; scanning = true; UpdateSummary();
@@ -163,7 +177,9 @@ namespace SaruTask
 
         private void Filter()
         {
-            string selected = results.CurrentRow == null ? null : ((SearchEntry)results.CurrentRow.Tag).FullPath;
+            if (renaming) return;
+            string selected = selectAfterScan ?? (results.CurrentRow == null ? null : ((SearchEntry)results.CurrentRow.Tag).FullPath);
+            selectAfterScan = null;
             int topIndex = results.FirstDisplayedScrollingRowIndex;
             string top = topIndex < 0 ? null : ((SearchEntry)results.Rows[topIndex].Tag).FullPath;
             var tokens = SearchCatalog.Tokens(search.Text);
@@ -215,7 +231,7 @@ namespace SaruTask
         private void UpdateSummary()
         {
             UpdateScope();
-            summary.Text = (scanning ? "更新中…  " : "") + results.Rows.Count + " / " + catalog.Count + "件    Enter: 開く   Ctrl+Enter: 保存場所   Esc: トレイへ";
+            summary.Text = (scanning ? "更新中…  " : "") + results.Rows.Count + " / " + catalog.Count + "件    F2: 名前変更   Enter: 開く   Ctrl+Enter: 保存場所   Esc: トレイへ";
             if (warnings.Count > 0) summary.Text += "    ⚠ 読み取りエラー " + warnings.Count + "件";
             if (!hotkeyRegistered) summary.Text += "    ⚠ ホットキーを登録できません";
             summary.ForeColor = warnings.Count > 0 || !hotkeyRegistered ? Color.FromArgb(150, 85, 15) : Color.DimGray;
@@ -247,12 +263,81 @@ namespace SaruTask
         }
         private void ResultsKeyDown(object sender, KeyEventArgs e)
         {
+            if (renaming) return;
             if (e.KeyCode == Keys.Enter) { OpenSelected(e.Control); e.SuppressKeyPress = true; }
             if (e.Control && e.KeyCode == Keys.C) { CopyPath(); e.SuppressKeyPress = true; }
         }
+        private void BeginRenameSelected()
+        {
+            if (renaming || results.CurrentRow == null) return;
+            renameEntry = results.CurrentRow.Tag as SearchEntry;
+            if (renameEntry == null) return;
+            committedRenamePath = null;
+            renaming = true;
+            debounce.Stop();
+            if (scanCancellation != null) scanCancellation.Cancel();
+            scanning = false;
+            results.CurrentCell = results.CurrentRow.Cells[0];
+            results.Focus();
+            if (!results.BeginEdit(true)) { FinishRename(); return; }
+            var editor = results.EditingControl as TextBox;
+            if (editor != null)
+            {
+                editor.SelectionStart = 0;
+                int stem = renameEntry.IsDirectory ? renameEntry.Name.Length : Path.GetFileNameWithoutExtension(renameEntry.Name).Length;
+                editor.SelectionLength = stem > 0 ? stem : renameEntry.Name.Length;
+            }
+        }
+
+        private void ValidateRename(object sender, DataGridViewCellValidatingEventArgs e)
+        {
+            if (!renaming || renameEntry == null || e.ColumnIndex != 0) return;
+            e.Cancel = !TryCommitRename(Convert.ToString(e.FormattedValue));
+        }
+
+        private bool TryCommitRename(string name)
+        {
+            if (!renaming || cancellingRename || renameEntry == null || committedRenamePath != null) return true;
+            try
+            {
+                committedRenamePath = RenameService.Rename(renameEntry.FullPath, name);
+                if (results.CurrentRow != null) results.CurrentRow.ErrorText = "";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (results.CurrentRow != null) results.CurrentRow.ErrorText = ex.Message;
+                MessageBox.Show(this, ex.Message, "名前を変更できません", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+        }
+
+        private void FinishRename()
+        {
+            if (!renaming) return;
+            if (results.CurrentRow != null) results.CurrentRow.ErrorText = "";
+            if (committedRenamePath != null && !string.Equals(committedRenamePath, renameEntry.FullPath, StringComparison.Ordinal))
+            {
+                renameEntry.FullPath = committedRenamePath;
+                renameEntry.Name = Path.GetFileName(committedRenamePath);
+                renameEntry.SearchName = SearchCatalog.Normalize(renameEntry.Name);
+                selectAfterScan = committedRenamePath;
+            }
+            renaming = false; renameEntry = null; committedRenamePath = null;
+            debounce.Stop();
+            Post(delegate { Filter(); BeginScan(); });
+        }
+
+        private void CancelRenameSelected()
+        {
+            if (!renaming) return;
+            cancellingRename = true;
+            try { results.CancelEdit(); results.EndEdit(); FinishRename(); }
+            finally { cancellingRename = false; }
+        }
         private void OpenSelected(bool location)
         {
-            if (results.CurrentRow == null) return;
+            if (renaming || results.CurrentRow == null) return;
             var entry = (SearchEntry)results.CurrentRow.Tag;
             try
             {

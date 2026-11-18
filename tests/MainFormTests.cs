@@ -10,6 +10,8 @@ internal static class MainFormTests
 {
     private static int assertions;
     private static T Field<T>(object owner, string name) { return (T)owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(owner); }
+    private static void PressFormKey(Form form, Keys key) { typeof(Control).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { new KeyEventArgs(key) }); }
+    private static void PressEditorKey(DataGridView grid, Keys key) { grid.GetType().GetMethod("ProcessDialogKey", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(grid, new object[] { key }); }
     private static bool HasAccessibleValue(AccessibleObject node, string value, int depth)
     {
         if (node.Value == value) return true;
@@ -65,6 +67,34 @@ internal static class MainFormTests
                 Check(HasAccessibleValue(list.AccessibilityObject, "nested.md", 3) && !HasAccessibleValue(list.AccessibilityObject, "タスク.md", 3), "screen reader values follow filtering without stale results");
                 search.Text = "zz-no-match";
                 Check(list.Rows.Count == 0, "no-match state clears previous results");
+                PressFormKey(form, Keys.F2);
+                Check(!list.IsCurrentCellInEditMode, "F2 with no selected result does nothing");
+                search.Text = "タスク"; form.BringToFrontForSearch();
+                PressFormKey(form, Keys.F2);
+                var editor = list.EditingControl as TextBox;
+                Check(editor != null && editor.SelectedText == "タスク", "F2 edits the selected name with the file extension excluded from selection");
+                editor.Text = "タスク変更.md";
+                File.WriteAllText(Path.Combine(temp, "編集中の追加.md"), "");
+                var editingWatch = Stopwatch.StartNew(); Until(() => editingWatch.ElapsedMilliseconds > 550);
+                Check(list.IsCurrentCellInEditMode && ReferenceEquals(editor, list.EditingControl) && editor.Text == "タスク変更.md", "watcher refresh cannot interrupt an active rename");
+                PressEditorKey(list, Keys.Enter);
+                Until(() => !Field<bool>(form, "scanning") && list.Rows.Count == 1 && Convert.ToString(list.Rows[0].Cells[0].Value) == "タスク変更.md");
+                Check(File.Exists(Path.Combine(temp, "タスク変更.md")) && !File.Exists(Path.Combine(temp, "タスク.md")), "Enter commits the rename on disk and refreshes the list");
+                Check(((SearchEntry)list.CurrentRow.Tag).FullPath == Path.Combine(temp, "タスク変更.md"), "renamed item remains selected after refresh");
+                PressFormKey(form, Keys.F2); ((TextBox)list.EditingControl).Text = "取り消し.md";
+                PressFormKey(form, Keys.Escape);
+                Check(!list.IsCurrentCellInEditMode && form.Visible && File.Exists(Path.Combine(temp, "タスク変更.md")) && !File.Exists(Path.Combine(temp, "取り消し.md")), "Escape cancels rename without hiding the window or changing the file");
+                Until(() => !Field<bool>(form, "scanning"));
+                search.Text = "子フォルダ"; PressFormKey(form, Keys.F2);
+                Check(((TextBox)list.EditingControl).SelectedText == "子フォルダ", "F2 selects the entire folder name");
+                ((TextBox)list.EditingControl).Text = "子フォルダ変更"; PressEditorKey(list, Keys.Enter);
+                Until(() => !Field<bool>(form, "scanning") && Convert.ToString(list.Rows[0].Cells[0].Value) == "子フォルダ変更");
+                Check(File.Exists(Path.Combine(temp, "子フォルダ変更", "nested.md")), "folder rename preserves child files");
+                Check(System.Linq.Enumerable.Any(Field<System.Collections.Generic.List<SearchEntry>>(form, "catalog"), x => x.Name == "nested.md" && x.Parent == Path.Combine(temp, "子フォルダ変更")), "recursive results refresh child paths after a folder rename");
+                search.Text = "タスク変更"; PressFormKey(form, Keys.F2);
+                ((TextBox)list.EditingControl).Text = "別名.md"; PressEditorKey(list, Keys.Enter);
+                Until(() => !Field<bool>(form, "scanning") && list.Rows.Count == 0);
+                Check(File.Exists(Path.Combine(temp, "別名.md")) && search.Text == "タスク変更", "rename keeps the search query when the new name no longer matches");
                 search.Text = "タスク"; form.BringToFrontForSearch();
                 Check(form.Visible && search.SelectionLength == search.TextLength, "recall shows window and selects search text");
                 form.Close();

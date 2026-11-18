@@ -18,6 +18,10 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed.' }
     & .\bin\SaruTask.Tests.exe
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+    & $compiler /nologo /utf8output /target:exe /out:bin\SaruTask.RenameTests.exe src\RenameService.cs tests\RenameServiceTests.cs
+    if ($LASTEXITCODE -ne 0) { throw 'Rename test compilation failed.' }
+    & .\bin\SaruTask.RenameTests.exe
+    if ($LASTEXITCODE -ne 0) { throw 'Rename tests failed.' }
     & $compiler /nologo /utf8output /target:exe /out:bin\SaruTask.UpdateTests.exe /reference:System.Runtime.Serialization.dll /reference:System.Net.Http.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll /reference:Microsoft.CSharp.dll src\UpdateService.cs src\AppSettings.cs tests\UpdateTests.cs
     if ($LASTEXITCODE -ne 0) { throw 'Update test compilation failed.' }
     & .\bin\SaruTask.UpdateTests.exe
